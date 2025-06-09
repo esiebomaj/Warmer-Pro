@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+social_promotion_results/
+social_promotion_results_1/
