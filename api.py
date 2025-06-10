@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
-import random
 from config import settings
+from main import process_keyword_search, get_actions_for_keyword
 
 app = FastAPI(
     title=settings.app_name, 
@@ -59,7 +59,7 @@ async def root():
     return {"message": "Social Media Promotion API is running!"}
 
 @app.post("/actions", response_model=List[ActionResponse])
-async def get_actions_for_keyword(request: KeywordRequest):
+async def get_actions(request: KeywordRequest):
     """
     Get a list of social media actions (follow, like, comment) for a given keyword
     """
@@ -68,7 +68,20 @@ async def get_actions_for_keyword(request: KeywordRequest):
     if not keyword:
         raise HTTPException(status_code=400, detail="Keyword cannot be empty")
     
-    return GENERIC_ACTIONS
+    try:
+        # Generate real actions based on the keyword
+        actions = get_actions_for_keyword(keyword, max_posts=8)
+        
+        # If no actions found, return generic actions as fallback
+        if not actions:
+            return []
+        
+        return actions
+        
+    except Exception as e:
+        # If there's an error, return generic actions as fallback
+        print(f"Error getting actions for keyword '{keyword}': {str(e)}")
+        return []
 
 @app.get("/health")
 async def health_check():

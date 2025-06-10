@@ -1,5 +1,5 @@
 from openai import OpenAI
-from apify import search_instagram_posts_by_keyword
+from apify import search_instagram_posts_by_keyword, scrape_instagram_profile
 import json
 from config import settings
 
@@ -20,7 +20,8 @@ def extract_post_context(post_data):
         "owner_username": post_data.get("ownerUsername", ""),
         "owner_full_name": post_data.get("ownerFullName", ""),
         "post_url": post_data.get("url", ""),
-        "images": post_data.get("images", []) + [post_data.get("displayUrl", None)]
+        "images": post_data.get("images", []) + [post_data.get("displayUrl", None)],
+        "display_url": post_data.get("displayUrl", None)
     }
     return context
 
@@ -109,6 +110,18 @@ def analyze_post_engagement_potential(post_context):
     
     return engagement_score
 
+def get_user_profile_pics(usernames):
+    """
+    Get the user profile pictures from the usernames
+    """
+    res = {}
+    profiles = scrape_instagram_profile(usernames)
+    for profile in profiles:
+        username = profile.get('username', '')
+        res[username] = profile.get('profilePicUrl', '')
+
+    return res
+
 def process_keyword_search(keyword, max_comments=20):
     """
     Main function to search for posts by keyword and generate comments
@@ -133,6 +146,12 @@ def process_keyword_search(keyword, max_comments=20):
         
         # Process each post and generate comments
         generated_comments = []
+        owners = set()
+
+        for post in posts:
+            owners.add(post.get('ownerUsername', ''))
+
+        profile_pics = get_user_profile_pics(list(owners))
         
         for i, post in enumerate(posts[:max_comments]):
             print(f"\n📱 Processing post {i+1}/{min(len(posts), max_comments)}")
@@ -159,21 +178,24 @@ def process_keyword_search(keyword, max_comments=20):
                     "post_url": post_context['post_url'],
                     "owner": post_context['owner_username'],
                     "owner_full_name": post_context['owner_full_name'],
+                    "owner_profile_pic": profile_pics.get(post_context['owner_username'], ''),
                     "likes": post_context['likes_count'],
                     "comments": post_context['comments_count'],
                     "engagement_score": engagement_score,
                     "caption_preview": post_context['caption'][:100] + "..." if len(post_context['caption']) > 100 else post_context['caption'],
                     "generated_comment": comment,
-                    "hashtags": post_context['hashtags'][:5]
+                    "hashtags": post_context['hashtags'][:5],
+                    "images": post_context['images']
                 }
                 
                 generated_comments.append(result)
+                owners.add(post_context['owner_username'])
                 
                 print(f"💡 Generated comment: {comment}")
                 print(f"🔗 Post URL: {post_context['post_url']}")
             else:
                 print("⏭️  Skipping post (low engagement potential)")
-        
+
         # Summary
         print(f"\n📋 SUMMARY")
         print(f"🔍 Keyword searched: {keyword}")
@@ -192,6 +214,83 @@ def process_keyword_search(keyword, max_comments=20):
     except Exception as e:
         print(f"❌ Error processing keyword search: {str(e)}")
         return []
+
+
+def generate_actions_from_posts(keyword, posts_data):
+    """
+    Convert post search results into actionable social media engagement tasks
+    Format matches the GENERIC_ACTIONS structure from api.py
+    """
+    actions = []
+    
+    for post_data in posts_data:
+        # Extract post image URL (prefer first image if available)
+        post_img_url = post_data.get('display_url', None)
+
+        
+        # Extract profile picture URL
+        username = post_data['owner']
+        profile_img_url = post_data.get('owner_profile_pic', '')
+        user_url = f"https://instagram.com/{username}"
+        
+        # Action 1: Follow the creator (one follow action per unique creator)
+        creator_follow_action = {
+            "action": "follow",
+            "url": user_url,
+            "img_url": profile_img_url  # Use profile picture for follow actions
+        }
+        
+        # Check if we already have a follow action for this creator
+        existing_follow = any(
+            action.get("action") == "follow" and post_data['owner'] in action.get("url", "")
+            for action in actions
+        )
+        
+        if not existing_follow:
+            actions.append(creator_follow_action)
+        
+        # Action 2: Like the post
+        like_action = {
+            "action": "like",
+            "url": post_data['post_url'],
+            "caption": post_data['caption_preview'],
+            "img_url": post_img_url  # Use post image for like actions
+        }
+        actions.append(like_action)
+        
+        # Action 3: Comment on the post
+        comment_action = {
+            "action": "comment",
+            "url": post_data['post_url'],
+            "comment": post_data['generated_comment'],
+            "caption": post_data['caption_preview'],  # Add caption for comment actions
+            "img_url": post_img_url  # Use post image for comment actions
+        }
+        actions.append(comment_action)
+    
+    return actions
+
+
+def get_actions_for_keyword(keyword, max_posts=10):
+    """
+    Simplified function for API use - returns actions for a keyword without logging
+    Returns actions in the same format as GENERIC_ACTIONS
+    """
+    try:
+        # Get posts and generated comments for the keyword
+        posts_data = process_keyword_search(keyword, max_comments=max_posts)
+        
+        if not posts_data:
+            return []
+        
+        # Convert posts data into actionable tasks
+        actions = generate_actions_from_posts(keyword, posts_data)
+        return actions
+        
+    except Exception as e:
+        print(f"Error generating actions for keyword '{keyword}': {str(e)}")
+        return []
+
 
 def main():
     """
