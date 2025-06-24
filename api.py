@@ -70,7 +70,7 @@ async def get_actions(request: KeywordRequest):
     
     try:
         # Generate real actions based on the keyword
-        actions = get_actions_for_keyword(keyword, max_posts=8)
+        actions = await get_actions_for_keyword(keyword, max_posts=12)
         
         # If no actions found, return generic actions as fallback
         if not actions:

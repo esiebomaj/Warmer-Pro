@@ -19,7 +19,8 @@ def search_instagram_posts_by_keyword(keyword):
         "resultsType": "details",
         "search": keyword,
         "searchLimit": 5,
-        "searchType": "hashtag"
+        "searchType": "hashtag",
+        "onlyPostsNewerThan": "12 months"
     }
 
     # Run the Actor and wait for it to finish

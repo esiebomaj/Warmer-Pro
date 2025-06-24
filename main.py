@@ -1,10 +1,11 @@
-from openai import OpenAI
+from openai import AsyncOpenAI
 from apify import search_instagram_posts_by_keyword, scrape_instagram_profile
 import json
+import asyncio
 from config import settings
 
-# Initialize OpenAI client
-client = OpenAI(
+# Initialize OpenAI async client
+client = AsyncOpenAI(
     api_key=settings.openai_api_key,
 )
 
@@ -25,9 +26,9 @@ def extract_post_context(post_data):
     }
     return context
 
-def generate_engaging_comment(post_context, keyword):
+async def generate_engaging_comment(post_context, keyword):
     """
-    Generate an engaging comment for a post using OpenAI
+    Generate an engaging comment for a post using OpenAI (async version)
     """
     # Create a prompt that focuses on generating high-engagement comments
     prompt = f"""
@@ -65,7 +66,7 @@ def generate_engaging_comment(post_context, keyword):
         {"role": "user", "content": prompt}
     ]
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
         max_tokens=100,
@@ -124,9 +125,54 @@ def get_user_profile_pics(usernames):
 
     return res
 
-def process_keyword_search(keyword, max_comments=20):
+async def process_single_post(post, keyword, profile_pics, post_index, total_posts):
     """
-    Main function to search for posts by keyword and generate comments
+    Process a single post asynchronously
+    """
+    print(f"\n📱 Processing post {post_index + 1}/{total_posts}")
+    
+    # Extract context from the post
+    post_context = extract_post_context(post)
+    print(post_context)
+    
+    # Analyze engagement potential
+    engagement_score = analyze_post_engagement_potential(post_context)
+    
+    print(f"👤 Owner: @{post_context['owner_username']}")
+    print(f"❤️  Likes: {post_context['likes_count']}")
+    print(f"💬 Comments: {post_context['comments_count']}")
+    print(f"📊 Engagement Score: {engagement_score}/7")
+    
+    if engagement_score >= 1:  # Only comment on posts with decent engagement
+        print("🎯 Generating comment...")
+        
+        # Generate engaging comment (async)
+        comment = await generate_engaging_comment(post_context, keyword)
+        
+        result = {
+            "post_url": post_context['post_url'],
+            "owner": post_context['owner_username'],
+            "owner_full_name": post_context['owner_full_name'],
+            "owner_profile_pic": profile_pics.get(post_context['owner_username'], ''),
+            "likes": post_context['likes_count'],
+            "comments": post_context['comments_count'],
+            "engagement_score": engagement_score,
+            "caption_preview": post_context['caption'][:100] + "..." if len(post_context['caption']) > 100 else post_context['caption'],
+            "generated_comment": comment,
+            "hashtags": post_context['hashtags'][:5],
+            "images": post_context['images']
+        }
+        
+        print(f"💡 Generated comment: {comment}")
+        print(f"🔗 Post URL: {post_context['post_url']}")
+        return result
+    else:
+        print("⏭️  Skipping post (low engagement potential)")
+        return None
+
+async def process_keyword_search(keyword, max_comments=20):
+    """
+    Main function to search for posts by keyword and generate comments (async version)
     """
     print(f"🔍 Searching for posts with keyword: '{keyword}'")
     
@@ -146,57 +192,32 @@ def process_keyword_search(keyword, max_comments=20):
         
         print(f"✅ Found {len(posts)} posts")
         
-        # Process each post and generate comments
-        generated_comments = []
+        # Get all unique owners first
         owners = set()
-
         for post in posts:
             owners.add(post.get('ownerUsername', ''))
 
         profile_pics = get_user_profile_pics(list(owners))
         
-        for i, post in enumerate(posts[:max_comments]):
-            print(f"\n📱 Processing post {i+1}/{min(len(posts), max_comments)}")
-            
-            # Extract context from the post
-            post_context = extract_post_context(post)
-            print(post_context)
-            
-            # Analyze engagement potential
-            engagement_score = analyze_post_engagement_potential(post_context)
-            
-            print(f"👤 Owner: @{post_context['owner_username']}")
-            print(f"❤️  Likes: {post_context['likes_count']}")
-            print(f"💬 Comments: {post_context['comments_count']}")
-            print(f"📊 Engagement Score: {engagement_score}/7")
-            
-            if engagement_score >= 1:  # Only comment on posts with decent engagement
-                print("🎯 Generating comment...")
-                
-                # Generate engaging comment
-                comment = generate_engaging_comment(post_context, keyword)
-                
-                result = {
-                    "post_url": post_context['post_url'],
-                    "owner": post_context['owner_username'],
-                    "owner_full_name": post_context['owner_full_name'],
-                    "owner_profile_pic": profile_pics.get(post_context['owner_username'], ''),
-                    "likes": post_context['likes_count'],
-                    "comments": post_context['comments_count'],
-                    "engagement_score": engagement_score,
-                    "caption_preview": post_context['caption'][:100] + "..." if len(post_context['caption']) > 100 else post_context['caption'],
-                    "generated_comment": comment,
-                    "hashtags": post_context['hashtags'][:5],
-                    "images": post_context['images']
-                }
-                
+        # Process posts in parallel
+        tasks = []
+        posts_to_process = posts[:max_comments]
+        
+        for i, post in enumerate(posts_to_process):
+            task = process_single_post(post, keyword, profile_pics, i, len(posts_to_process))
+            tasks.append(task)
+        
+        # Execute all tasks concurrently
+        print(f"\n🚀 Processing {len(tasks)} posts in parallel...")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Filter out None results and exceptions
+        generated_comments = []
+        for result in results:
+            if result is not None and not isinstance(result, Exception):
                 generated_comments.append(result)
-                owners.add(post_context['owner_username'])
-                
-                print(f"💡 Generated comment: {comment}")
-                print(f"🔗 Post URL: {post_context['post_url']}")
-            else:
-                print("⏭️  Skipping post (low engagement potential)")
+            elif isinstance(result, Exception):
+                print(f"❌ Error processing post: {str(result)}")
 
         # Summary
         print(f"\n📋 SUMMARY")
@@ -273,14 +294,14 @@ def generate_actions_from_posts(keyword, posts_data):
     return actions
 
 
-def get_actions_for_keyword(keyword, max_posts=10):
+async def get_actions_for_keyword(keyword, max_posts=10):
     """
-    Simplified function for API use - returns actions for a keyword without logging
+    Simplified function for API use - returns actions for a keyword without logging (async version)
     Returns actions in the same format as GENERIC_ACTIONS
     """
     try:
         # Get posts and generated comments for the keyword
-        posts_data = process_keyword_search(keyword, max_comments=max_posts)
+        posts_data = await process_keyword_search(keyword, max_comments=max_posts)
         
         if not posts_data:
             return []
@@ -294,9 +315,9 @@ def get_actions_for_keyword(keyword, max_posts=10):
         return []
 
 
-def main():
+async def main():
     """
-    Main function to run the social promotion script
+    Main function to run the social promotion script (async version)
     """
     print("🚀 Instagram Social Promotion Bot")
     print("=" * 50)
@@ -305,16 +326,23 @@ def main():
     # keywords = ["tourism", "resort", "African startup", "special economic zone", "remote working", "digital nomads"]
     # keywords = ["special economic zone"]
 
-    # Process the keyword search and generate comments
+    # Process all keywords concurrently
+    tasks = []
     for keyword in keywords:
-        results = process_keyword_search(keyword)
+        tasks.append(process_keyword_search(keyword))
     
-        # Save results to file
-        if results:
+    print(f"\n🚀 Processing {len(keywords)} keywords in parallel...")
+    all_results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Save results to files
+    for keyword, results in zip(keywords, all_results):
+        if results and not isinstance(results, Exception):
             filename = f"./social_promotion_results_1/{keyword.replace(' ', '_')}.json"
             with open(filename, 'w') as f:
                 json.dump(results, f, indent=2)
-            print(f"\n💾 Results saved to: {filename}")
+            print(f"\n💾 Results for '{keyword}' saved to: {filename}")
+        elif isinstance(results, Exception):
+            print(f"❌ Error processing keyword '{keyword}': {str(results)}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
