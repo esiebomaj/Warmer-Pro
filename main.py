@@ -115,7 +115,9 @@ def get_user_profile_pics(usernames):
     Get the user profile pictures from the usernames
     """
     res = {}
-    profiles = scrape_instagram_profile(usernames)
+    profile_urls = [f"https://instagram.com/{username}" for username in usernames]
+    print(profile_urls)
+    profiles = scrape_instagram_profile(profile_urls)
     for profile in profiles:
         username = profile.get('username', '')
         res[username] = profile.get('profilePicUrl', '')
