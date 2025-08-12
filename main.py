@@ -111,18 +111,31 @@ def analyze_post_engagement_potential(post_context):
     
     return engagement_score
 
+def get_users_profiles(usernames, with_related_profiles=False):
+    """
+    Get the user profile from the usernames
+    """
+    res = {}
+    profile_urls = [f"https://instagram.com/{username}" for username in usernames]
+    profiles = scrape_instagram_profile(profile_urls)
+    for profile in profiles:
+
+        username = profile.get('username', '')
+        # remove latestPosts from the profile
+        if with_related_profiles:
+            res[username] = {k:v for k,v in profile.items() if k not in ['latestPosts', 'latestIgtvVideos']}
+        else:
+            res[username] = {k:v for k,v in profile.items() if k not in ['latestPosts', 'latestIgtvVideos', 'relatedProfiles']}
+    
+    return res
+
 def get_user_profile_pics(usernames):
     """
     Get the user profile pictures from the usernames
     """
-    res = {}
-    profile_urls = [f"https://instagram.com/{username}" for username in usernames]
-    print(profile_urls)
-    profiles = scrape_instagram_profile(profile_urls)
-    for profile in profiles:
-        username = profile.get('username', '')
+    res = get_users_profiles(usernames)
+    for username, profile in res.items():
         res[username] = profile.get('profilePicUrl', '')
-
     return res
 
 async def process_single_post(post, keyword, profile_pics, post_index, total_posts):
@@ -313,6 +326,34 @@ async def get_actions_for_keyword(keyword, max_posts=10):
     except Exception as e:
         print(f"Error generating actions for keyword '{keyword}': {str(e)}")
         return []
+
+async def get_creators(keyword, filters={}):
+    """
+    Get a list of creators for a given keyword and country
+    """
+    country = filters.get('country', '')
+    posts_raw = search_instagram_posts_by_keyword(keyword)
+    posts = []
+
+    for post in posts_raw:
+        posts.extend(post.get("topPosts", []))
+    
+    print(f"Found {len(posts)} posts")
+    
+    # Get all unique owners first
+    owners = set()
+    for post in posts:
+        owners.add(post.get('ownerUsername', ''))
+
+    owners_profiles = get_users_profiles(list(owners)[:10], with_related_profiles=False)
+
+    for filter, value in filters.items():
+        if filter == 'followers_count_gt':
+            owners_profiles = {username: profile for username, profile in owners_profiles.items() if profile.get('followersCount', 0) >= value}
+        elif filter == 'followers_count_lt':
+            owners_profiles = {username: profile for username, profile in owners_profiles.items() if profile.get('followersCount', 0) <= value}
+
+    return owners_profiles
 
 
 async def main():
