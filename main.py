@@ -345,7 +345,7 @@ async def get_creators(keyword, filters={}):
     for post in posts:
         owners.add(post.get('ownerUsername', ''))
 
-    owners_profiles = get_users_profiles(list(owners)[:10], with_related_profiles=False)
+    owners_profiles = get_users_profiles(list(owners), with_related_profiles=False)
 
     for filter, value in filters.items():
         if filter == 'followers_count_gt':
