@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 from typing import List, Optional
 from config import settings
-from main import process_keyword_search, get_actions_for_keyword, get_creators
+from main import get_actions_for_keyword, get_creators, get_today_love_msg_greeting
 
 app = FastAPI(
     title=settings.app_name, 
@@ -162,3 +162,17 @@ async def proxy_image(url: str):
         return Response(content=r.content, headers=headers)
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"Upstream error: {exc}")
+    
+@app.get("/love-message")
+async def love_message():
+    """
+    Generate a creative, loving SMS-style message for a girlfriend.
+    Includes today's day and date when it naturally fits.
+    """
+    try:
+        message = await get_today_love_msg_greeting()
+        return {"message": message}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate love message: {str(e)}")
+
+

@@ -3,6 +3,8 @@ from apify import search_instagram_posts_by_keyword, scrape_instagram_profile
 import json
 import asyncio
 from config import settings
+from datetime import datetime
+
 
 # Initialize OpenAI async client
 client = AsyncOpenAI(
@@ -354,6 +356,39 @@ async def get_creators(keyword, filters={}):
             owners_profiles = {username: profile for username, profile in owners_profiles.items() if profile.get('followersCount', 0) <= value}
 
     return owners_profiles
+
+
+async def get_today_love_msg_greeting():
+    """
+    Ask OpenAI to generate a short, affectionate text message for a girlfriend.
+    The message should be creative and may naturally include today's day and date.
+    """
+    today_str = datetime.now().strftime("%A, %B %d, %Y")
+
+    system_msg = (
+        "You craft warm, genuine, and creative SMS-length love messages. "
+        "Keep it personal, natural, and not cheesy. Use 1-2 sentences max. "
+        "You may reference the provided day/date naturally. Use up to 2 emojis max."
+    )
+
+    user_msg = (
+        f"Girlfriend's name: Ifem\n"
+        f"Today: {today_str}\n"
+        "Write a text reminding her I love her, in a heartfelt, modern tone."
+        "You dont always have to say 'just wanted to remind you that I love you', be creative and natural"
+    )
+
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ],
+        max_tokens=120,
+        temperature=0.85,
+    )
+
+    return response.choices[0].message.content.strip()
 
 
 async def main():
