@@ -364,27 +364,17 @@ async def get_creators(keyword, filters={}):
     return owners_profiles
 
 async def get_related_posts(keyword):
-    """
-    Get a list of creators for a given keyword and country
-    """
     print("Finding posts for keyword:", keyword)
-    posts_raw = search_instagram_posts_by_keyword(keyword)
-    posts = []
+    posts_raw = await asyncio.to_thread(search_instagram_posts_by_keyword, keyword)
 
+    posts = []
     for post in posts_raw:
         top_posts = post.get("topPosts", [])
         top_posts.sort(key=lambda x: x.get('likesCount', 0) + x.get('commentsCount', 0) + x.get('reshareCount', 0), reverse=True)
-        top_posts = top_posts[:10]
-        posts.extend(top_posts)
-    
-    print(f"Found {len(posts)} posts")
-    
-    # Get all unique owners first
-    owners = set()
-    for post in posts:
-        owners.add(post.get('ownerUsername', ''))
-    print(f"Getting creator details for {len(owners)} creators")
-    creator_profiles = get_users_profiles(list(owners), with_related_profiles=False)
+        posts.extend(top_posts[:10])
+
+    owners = {post.get('ownerUsername', '') for post in posts}
+    creator_profiles = await asyncio.to_thread(get_users_profiles, list(owners), False)
 
     for post in posts:
         username = post.get('ownerUsername', '')
@@ -488,7 +478,7 @@ async def analyze_text_to_brief(text: str) -> SocialMediaBrief:
         "- Prefer concrete, specific phrases (not generic).\n"
         "- hashtags should include the leading # and be platform-appropriate.\n"
         "- micro_share_ideas should be short bite-sized hooks or talking points (1 line each).\n"
-        "- keywords should be strong search terms we can use to find related posts.\n"
+        "- keywords should be 5 strong search terms we can use to find related posts.\n"
         "- Aim for 5-10 items for each list when content allows.\n\n"
         f"Content:\n{text[:8000]}"
     )

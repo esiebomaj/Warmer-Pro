@@ -16,6 +16,7 @@ from main import (
 )
 from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_posts
 import json
+import asyncio
 
 app = FastAPI(
     title=settings.app_name, 
@@ -276,10 +277,15 @@ async def related_posts(req: RelatedPostsRequest):
     # return demo_posts
 
     try:
+        tasks = [get_related_posts(k) for k in req.keywords]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
         res = []
-        for keyword in req.keywords[:3]:
-            posts = await get_related_posts(keyword)
-            res.extend(posts)
+        for r in results:
+            if isinstance(r, Exception):
+                # optionally log the error
+                continue
+            res.extend(r)
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch related posts: {str(e)}")
