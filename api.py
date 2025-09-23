@@ -1,12 +1,21 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from fastapi import UploadFile, File, Form
 import httpx
 from urllib.parse import urlparse
 from pydantic import BaseModel
 from typing import List, Optional
 from config import settings
-from main import get_actions_for_keyword, get_creators, get_today_love_msg_greeting
+from main import (
+    get_actions_for_keyword,
+    get_creators,
+    get_today_love_msg_greeting,
+    extract_post_context,
+    generate_engaging_comment,
+)
+from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_posts
+import json
 
 app = FastAPI(
     title=settings.app_name, 
@@ -174,5 +183,122 @@ async def love_message():
         return {"message": message}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate love message: {str(e)}")
+
+
+class BlogpostRequest(BaseModel):
+    text: str
+
+
+class BlogpostBriefResponse(SocialMediaBrief):
+    pass
+
+demo_response = {
+  "ad_targeting_topics": [
+    "AI development",
+    "JSON schema compliance",
+    "OpenAI API features",
+    "Structured data generation",
+    "Model reliability enhancement"
+  ],
+  "hashtags": [
+    "#DevDay2023",
+    "#JSONMode",
+    "#StructuredOutputs",
+    "#OpenAIAPI",
+    "#AIDevelopment"
+  ],
+  "micro_share_ideas": [
+    "Discover how Structured Outputs enhance model reliability!",
+    "JSON mode just got an upgrade – learn more today!",
+    "Transform unstructured data effortlessly with Structured Outputs.",
+    "Join us in celebrating the power of AI-driven data!",
+    "Build reliable applications with our new API features."
+  ],
+  "keywords": [
+    "OpenAI",
+    "JSON mode",
+    "Structured Outputs",
+    "AI data generation",
+    "developer tools"
+  ]
+}
+
+@app.post("/analyze/blogpost", response_model=BlogpostBriefResponse)
+async def analyze_blogpost(request: BlogpostRequest):
+    # return demo_response
+    text = (request.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text cannot be empty")
+    brief = await analyze_text_to_brief(text)
+    return brief
+
+
+class VideoBriefResponse(SocialMediaBrief):
+    transcript: Optional[str] = None
+
+
+@app.post("/analyze/video", response_model=VideoBriefResponse)
+async def analyze_video(
+    url: Optional[str] = Form(default=None),
+    file: Optional[UploadFile] = File(default=None),
+):
+    if not url and not file:
+        raise HTTPException(status_code=400, detail="Provide either url or file")
+
+    transcript = ""
+    try:
+        if url:
+            transcript = await transcribe_from_url(url)
+        else:
+            content = await file.read()
+            transcript = await transcribe_media_bytes(content, file.filename or "upload.mp4")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+    print(transcript)
+    if not transcript:
+        raise HTTPException(status_code=422, detail="Empty transcript")
+
+    brief = await analyze_text_to_brief(transcript)
+    return VideoBriefResponse(**brief.model_dump(), transcript=transcript)
+
+
+class RelatedPostsRequest(BaseModel):
+    keywords: List[str]
+
+
+@app.post("/related-posts")
+async def related_posts(req: RelatedPostsRequest):
+    if not req.keywords:
+        raise HTTPException(status_code=400, detail="keywords cannot be empty")
+    # Reuse existing get_related_posts by passing the list; it already joins lists
+    # with open("test.json", "r") as f:
+    #     demo_posts = json.load(f)
+    # return demo_posts
+
+    try:
+        res = []
+        for keyword in req.keywords[:3]:
+            posts = await get_related_posts(keyword)
+            res.extend(posts)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch related posts: {str(e)}")
+
+class GenerateCommentRequest(BaseModel):
+    post: dict
+    keywords: Optional[str] = None
+
+class GenerateCommentResponse(BaseModel):
+    comment: str
+
+
+@app.post("/generate-comment", response_model=GenerateCommentResponse)
+async def generate_comment(req: GenerateCommentRequest):
+    try:
+        context = extract_post_context(req.post)
+        comment = await generate_engaging_comment(context, req.keywords)
+        return {"comment": comment.strip("\"").strip("\'")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate comment: {str(e)}")
 
 

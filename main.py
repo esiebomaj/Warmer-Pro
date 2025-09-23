@@ -1,9 +1,14 @@
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 from apify import search_instagram_posts_by_keyword, scrape_instagram_profile
 import json
 import asyncio
 from config import settings
 from datetime import datetime
+from pydantic import BaseModel, Field
+from typing import List, Optional, Any
+import httpx
+import os
+import tempfile
 
 
 # Initialize OpenAI async client
@@ -28,11 +33,12 @@ def extract_post_context(post_data):
     }
     return context
 
-async def generate_engaging_comment(post_context, keyword):
+async def generate_engaging_comment(post_context, keyword=None):
     """
     Generate an engaging comment for a post using OpenAI (async version)
     """
     # Create a prompt that focuses on generating high-engagement comments
+    keyword_prompt = f"- Search keyword(s): {keyword}" if keyword else ""
     prompt = f"""
     You are a social media engagement expert. Generate a comment for an Instagram post that will maximize engagement and encourage people to check out our profile. the comment should be from a 3rd party point of view since we are replying as a company 
 
@@ -42,7 +48,7 @@ async def generate_engaging_comment(post_context, keyword):
     - Owner: @{post_context['owner_username']}
     - Likes: {post_context['likes_count']}
     - Comments: {post_context['comments_count']}
-    - Search keyword: {keyword}
+    {keyword_prompt}
 
     Guidelines for the comment:
     1. Be authentic and relevant to the post content
@@ -357,6 +363,68 @@ async def get_creators(keyword, filters={}):
 
     return owners_profiles
 
+async def get_related_posts(keyword):
+    """
+    Get a list of creators for a given keyword and country
+    """
+    print("Finding posts for keyword:", keyword)
+    posts_raw = search_instagram_posts_by_keyword(keyword)
+    posts = []
+
+    for post in posts_raw:
+        top_posts = post.get("topPosts", [])
+        top_posts.sort(key=lambda x: x.get('likesCount', 0) + x.get('commentsCount', 0) + x.get('reshareCount', 0), reverse=True)
+        top_posts = top_posts[:10]
+        posts.extend(top_posts)
+    
+    print(f"Found {len(posts)} posts")
+    
+    # Get all unique owners first
+    owners = set()
+    for post in posts:
+        owners.add(post.get('ownerUsername', ''))
+    print(f"Getting creator details for {len(owners)} creators")
+    creator_profiles = get_users_profiles(list(owners), with_related_profiles=False)
+
+    for post in posts:
+        username = post.get('ownerUsername', '')
+        creator = creator_profiles.get(username, {})
+        post["creator_details"] = creator
+        post = formatRelatedPosts(post)
+
+    print(f"Returning {len(posts)} posts")
+    return posts
+
+
+def formatRelatedPosts(post):
+    """
+    Format the related posts
+    """
+    newpost = {}
+    for k, v in post.items():
+        if k in [
+            "inputUrl", 
+            "type", 
+            "caption", 
+            "url", 
+            "displayUrl", 
+            "videoUrl", 
+            "hashtags", 
+            "likesCount",
+            "commentsCount",
+            "reshareCount",
+            "timestamp",
+            "images",
+            "locationName",
+            "isSponsored",
+            "ownerFullName",
+            "ownerUsername",
+            "ownerId",
+            "creator_details",
+            ]:
+            newpost[k] = v
+    return newpost
+
 
 async def get_today_love_msg_greeting():
     """
@@ -390,6 +458,99 @@ async def get_today_love_msg_greeting():
 
     return response.choices[0].message.content.strip()
 
+
+class SocialMediaBrief(BaseModel):
+    """
+    Structured output for social media briefing content
+    """
+    ad_targeting_topics: list[str] = Field(description="A list of topics that the ad should target")
+    hashtags: list[str] = Field(description="A list of hashtags that the ad should use")
+    micro_share_ideas: list[str] = Field(description="A list of micro share ideas")
+    keywords: list[str] = Field(description="A list of keywords which are strong search terms we can use to find related posts")
+
+
+async def analyze_text_to_brief(text: str) -> SocialMediaBrief:
+    """
+    Use OpenAI to extract structured briefing content from a blog post or transcript.
+    Returns a validated SocialMediaBrief.
+    """
+    print(f"Analyzing text to brief: {text[:8000]}")
+    system_msg = (
+        "You are a senior social strategist. Read the provided content and produce "
+        "concise, actionable outputs for a marketing team."
+    )
+
+    user_msg = (
+        "Analyze the following content and return ONLY a JSON object with these keys: "
+        "ad_targeting_topics, hashtags, micro_share_ideas, keywords.\n\n"
+        "Rules:\n"
+        "- Each value must be an array of strings.\n"
+        "- Prefer concrete, specific phrases (not generic).\n"
+        "- hashtags should include the leading # and be platform-appropriate.\n"
+        "- micro_share_ideas should be short bite-sized hooks or talking points (1 line each).\n"
+        "- keywords should be strong search terms we can use to find related posts.\n"
+        "- Aim for 5-10 items for each list when content allows.\n\n"
+        f"Content:\n{text[:8000]}"
+    )
+    response = await client.beta.chat.completions.parse(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ],
+        max_tokens=1000,
+        temperature=0.85,
+        response_format=SocialMediaBrief,
+    )
+
+    resp_mgs = response.choices[0].message
+
+    if resp_mgs.parsed:
+        return resp_mgs.parsed
+
+    print(resp_mgs.refusal)
+    return None
+
+
+async def transcribe_media_bytes(file_bytes: bytes, filename: str) -> str:
+    """
+    Transcribe audio/video bytes to text using OpenAI transcription.
+    Supports common audio and video formats (e.g., mp3, m4a, wav, mp4, mov).
+    """
+    suffix = os.path.splitext(filename or "")[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+
+    try:
+        with open(tmp_path, "rb") as f:
+            transcription = await client.audio.transcriptions.create(
+                model="gpt-4o-transcribe",
+                file=f,
+            )
+        text = getattr(transcription, "text", None)
+        if not text and hasattr(transcription, "to_dict"):
+            text = transcription.to_dict().get("text", "")
+        return text or ""
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+async def transcribe_from_url(url: str) -> str:
+    """
+    Download media from URL and transcribe.
+    """
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client_http:
+        r = await client_http.get(url)
+        r.raise_for_status()
+        content = r.content
+    print(content)
+    # Derive filename from URL path
+    parsed_name = url.split("?")[0].rstrip("/").split("/")[-1] or "media.mp4"
+    return await transcribe_media_bytes(content, parsed_name)
 
 async def main():
     """
