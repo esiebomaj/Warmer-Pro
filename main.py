@@ -33,59 +33,104 @@ def extract_post_context(post_data):
     }
     return context
 
-async def generate_engaging_comment(post_context, keyword=None):
+async def get_image_content(images):
+    """
+    Downloads images from URLs, converts them to base64, and formats for OpenAI Vision.
+    Returns: List of dicts with type/image_url for OpenAI.
+    """
+    import base64
+
+    img_content = []
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for image_url in images:
+            try:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                b64 = base64.b64encode(resp.content).decode("utf-8")
+                img_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                })
+            except Exception as e:
+                print(f"Error processing image {image_url}: {e}")
+    return img_content
+
+
+
+async def generate_engaging_comment(
+    post_context,
+    keyword: Optional[str] = None,
+    prior_post_text: Optional[str] = None,
+):
     """
     Generate an engaging comment for a post using OpenAI (async version)
     """
-    # Create a prompt that focuses on generating high-engagement comments
+   
     keyword_prompt = f"- Search keyword(s): {keyword}" if keyword else ""
+    prior_post_prompt = (
+        f"- Our earlier post (for grounding; cite or draw from if relevant): {prior_post_text[:400]}..."
+        if prior_post_text else ""
+    )
+
     prompt = f"""
-    You are a social media engagement expert. Generate a comment for an Instagram post that will maximize engagement and encourage people to check out our profile. the comment should be from a 3rd party point of view since we are replying as a company 
+    You are a social media engagement expert.
+    Write an Instagram comment that sparks discussion and curiosity (not a CTA).
+    The comment should be from a 3rd party point of view since we are replying as a company.
 
     Post Context:
-    - Caption: {post_context['caption'][:200]}...
+    - Caption: {post_context['caption'][:240]}...
     - Hashtags: {', '.join(post_context['hashtags'][:5])}
     - Owner: @{post_context['owner_username']}
     - Likes: {post_context['likes_count']}
     - Comments: {post_context['comments_count']}
     {keyword_prompt}
+    {prior_post_prompt}
 
     Guidelines for the comment:
-    1. Be authentic and relevant to the post content
-    2. Add value (Drop related tips or hint related to the topic)
-    4. Show genuine interest in the content
-    4. Use coloqual language in the domain 
-    5. Say something specific in your comment 
-    6. Use emojis appropriately but don't overdo it
-    7. Keep it concise (1-2 sentences max)
-    8. Don't use hashtags in the comment
-    9. Avoid being salesy or promotional
-    10. Don't be overly official of simpish
-    11. Tone should not be too glowy and stiff
+    1. Be specific and relevant; add a fresh data point, nuance, or micro-correction if needed.
+    2. If the post makes a questionable claim, politely challenge it and offer a concise correction grounded in our earlier post when applicable.
+    3. Use a natural, domain-appropriate, colloquial tone (no corporate vibe).
+    4. 1–2 sentences max. Up to 1 relevant emoji max. No hashtags.
+    5. Do not be salesy. Do not say things like "check our profile" or any explicit CTA.
+    6. Avoid being overly glowy or simpish; aim for thoughtful and slightly provocative.
+    7. Mention something concrete from the post (a stat, claim, or angle) so it feels tailored.
+    8. something controversial or challenging to spark discussion.
 
-    
-
-
-    Generate a comment that feels natural and would encourage the poster and others to engage with our profile:
+    Return only the comment text.
     """
 
+    system_msg = "You craft incisive, respectful comments that add value, correct gently when needed, and invite conversation without explicit CTAs."
+
+    # Always include images when present (vision models will use them)
+    image_urls = post_context.get("images") or []
+ 
+    if image_urls:
+        user_content = [{"type": "text", "text": prompt}] + await get_image_content(image_urls)
+        
+    else:
+        user_content = prompt
+
     messages = [
-        {"role": "system", "content": "You are an expert at creating engaging, authentic social media comments that drive meaningful interactions and profile visits."},
-        {"role": "user", "content": prompt}
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_content},
     ]
 
+    import pprint
+
+    pprint.pprint(messages)
+
+    # Prefer a strong, vision-capable default; allow override via argument
+    model_name = "gpt-4o-mini"
+
+
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=model_name,
         messages=messages,
-        max_tokens=100,
-        temperature=0.5  # Add some creativity
+        max_tokens=120,
+        temperature=0.65,
     )
 
-    # 3. Ask thoughtful questions, share insights, or give genuine compliments
-
-
     return response.choices[0].message.content.strip()
-
 def analyze_post_engagement_potential(post_context):
     """
     Analyze if a post has good engagement potential

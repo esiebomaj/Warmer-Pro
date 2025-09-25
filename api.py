@@ -271,10 +271,6 @@ class RelatedPostsRequest(BaseModel):
 async def related_posts(req: RelatedPostsRequest):
     if not req.keywords:
         raise HTTPException(status_code=400, detail="keywords cannot be empty")
-    # Reuse existing get_related_posts by passing the list; it already joins lists
-    # with open("test.json", "r") as f:
-    #     demo_posts = json.load(f)
-    # return demo_posts
 
     try:
         tasks = [get_related_posts(k) for k in req.keywords]
@@ -293,6 +289,7 @@ async def related_posts(req: RelatedPostsRequest):
 class GenerateCommentRequest(BaseModel):
     post: dict
     keywords: Optional[str] = None
+    prior_post_text: Optional[str] = None
 
 class GenerateCommentResponse(BaseModel):
     comment: str
@@ -302,7 +299,7 @@ class GenerateCommentResponse(BaseModel):
 async def generate_comment(req: GenerateCommentRequest):
     try:
         context = extract_post_context(req.post)
-        comment = await generate_engaging_comment(context, req.keywords)
+        comment = await generate_engaging_comment(context, req.keywords, req.prior_post_text)
         return {"comment": comment.strip("\"").strip("\'")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate comment: {str(e)}")
