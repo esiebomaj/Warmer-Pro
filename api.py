@@ -14,7 +14,7 @@ from main import (
     extract_post_context,
     generate_engaging_comment,
 )
-from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_posts
+from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_instagram_posts, get_related_linkedin_posts, get_related_twitter_posts
 import json
 import asyncio
 
@@ -267,13 +267,14 @@ class RelatedPostsRequest(BaseModel):
     keywords: List[str]
 
 
-@app.post("/related-posts")
-async def related_posts(req: RelatedPostsRequest):
+@app.post("/related-posts/instagram")
+async def related_instagram_posts(req: RelatedPostsRequest):
+    # return []
     if not req.keywords:
         raise HTTPException(status_code=400, detail="keywords cannot be empty")
 
     try:
-        tasks = [get_related_posts(k) for k in req.keywords]
+        tasks = [get_related_instagram_posts(k) for k in req.keywords]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         res = []
@@ -303,5 +304,52 @@ async def generate_comment(req: GenerateCommentRequest):
         return {"comment": comment.strip("\"").strip("\'")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate comment: {str(e)}")
+
+
+@app.post("/related-posts/linkedin")
+async def related_linkedin_posts(req: RelatedPostsRequest):
+    """
+    Get related LinkedIn posts for given keywords
+    """
+    # return []
+    if not req.keywords:
+        raise HTTPException(status_code=400, detail="keywords cannot be empty")
+
+    try:
+        tasks = [get_related_linkedin_posts(k) for k in req.keywords]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        res = []
+        for r in results:
+            if isinstance(r, Exception):
+                # optionally log the error
+                continue
+            res.extend(r)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch LinkedIn posts: {str(e)}")
+
+
+@app.post("/related-posts/twitter")
+async def related_twitter_posts(req: RelatedPostsRequest):
+    """
+    Get related Twitter/X posts for given keywords using Apify Twitter Scraper
+    """
+    if not req.keywords:
+        raise HTTPException(status_code=400, detail="keywords cannot be empty")
+
+    try:
+        tasks = [get_related_twitter_posts(k) for k in req.keywords]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        res = []
+        for r in results:
+            if isinstance(r, Exception):
+                # optionally log the error
+                continue
+            res.extend(r)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Twitter posts: {str(e)}")
 
 

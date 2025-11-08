@@ -1,5 +1,5 @@
 from openai import AsyncOpenAI, OpenAI
-from apify import search_instagram_posts_by_keyword, scrape_instagram_profile
+from apify import search_instagram_posts_by_keyword, scrape_instagram_profile, search_linkedin_posts_by_keyword, search_twitter_posts_by_keyword
 import json
 import asyncio
 from config import settings
@@ -408,7 +408,7 @@ async def get_creators(keyword, filters={}):
 
     return owners_profiles
 
-async def get_related_posts(keyword):
+async def get_related_instagram_posts(keyword):
     print("Finding posts for keyword:", keyword)
     posts_raw = await asyncio.to_thread(search_instagram_posts_by_keyword, keyword)
 
@@ -417,7 +417,6 @@ async def get_related_posts(keyword):
         top_posts = post.get("topPosts", [])
         top_posts.sort(key=lambda x: x.get('likesCount', 0) + x.get('commentsCount', 0) + x.get('reshareCount', 0), reverse=True)
         posts.extend(top_posts[:10])
-
     owners = {post.get('ownerUsername', '') for post in posts}
     creator_profiles = await asyncio.to_thread(get_users_profiles, list(owners), False)
 
@@ -461,6 +460,35 @@ def formatRelatedPosts(post):
     return newpost
 
 
+async def get_related_linkedin_posts(keyword):
+    """
+    Get related LinkedIn posts for a given keyword
+    """
+    print(f"Finding LinkedIn posts for keyword: {keyword}")
+    # return []
+    try:
+        posts = await asyncio.to_thread(search_linkedin_posts_by_keyword, keyword, limit=10)
+        print(f"Returning {len(posts)} LinkedIn posts")
+        return posts
+    except Exception as e:
+        print(f"Error fetching LinkedIn posts for keyword '{keyword}': {str(e)}")
+        return []
+
+
+async def get_related_twitter_posts(keyword):
+    """
+    Get related Twitter/X posts for a given keyword using Apify Twitter Scraper
+    """
+    print(f"Finding Twitter posts for keyword: {keyword}")
+    try:
+        posts = await asyncio.to_thread(search_twitter_posts_by_keyword, keyword, limit=10)
+        print(f"Returning {len(posts)} Twitter posts")
+        return posts
+    except Exception as e:
+        print(f"Error fetching Twitter posts for keyword '{keyword}': {str(e)}")
+        return []
+
+
 async def get_today_love_msg_greeting():
     """
     Ask OpenAI to generate a short, affectionate text message for a girlfriend.
@@ -498,10 +526,10 @@ class SocialMediaBrief(BaseModel):
     """
     Structured output for social media briefing content
     """
-    ad_targeting_topics: list[str] = Field(description="A list of topics that the ad should target")
-    hashtags: list[str] = Field(description="A list of hashtags that the ad should use")
-    micro_share_ideas: list[str] = Field(description="A list of micro share ideas")
-    keywords: list[str] = Field(description="A list of keywords which are strong search terms we can use to find related posts")
+    ad_targeting_topics: List[str] = Field(description="A list of topics that the ad should target")
+    hashtags: List[str] = Field(description="A list of hashtags that the ad should use")
+    micro_share_ideas: List[str] = Field(description="A list of micro share ideas")
+    keywords: List[str] = Field(description="A list of keywords which are strong search terms we can use to find related posts")
 
 
 async def analyze_text_to_brief(text: str) -> SocialMediaBrief:
