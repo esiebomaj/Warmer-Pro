@@ -2,6 +2,36 @@ from apify_client import ApifyClient
 from config import settings
 import os
 
+
+def search_instagram_posts_by_keywords(keywords, limit=10):
+    """
+    Search for Instagram posts by keyword using hashtag search
+    """
+    # Initialize the ApifyClient with your API token
+    client = ApifyClient(settings.apify_api_token)
+
+    # Prepare the Actor input for keyword search
+    run_input = {
+        "hashtags": [keyword.replace(" ", "") for keyword in keywords],
+        "keywordSearch": True,
+        "resultsLimit": limit,
+        "resultsType": "posts"
+    }
+    # print(run_input)
+
+    # Run the Actor and wait for it to finish
+    run = client.actor("apify/instagram-hashtag-scraper").call(run_input=run_input)
+
+    # print(run)
+
+    # Fetch and return all posts from the search results
+    posts = []
+    for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+        posts.append(item)
+    print(len(posts), "posts found!")
+    return posts
+
+
 def search_instagram_posts_by_keyword(keyword):
     """
     Search for Instagram posts by keyword using hashtag search

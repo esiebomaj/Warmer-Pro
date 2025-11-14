@@ -1,5 +1,9 @@
 from openai import AsyncOpenAI, OpenAI
-from apify import search_instagram_posts_by_keyword, scrape_instagram_profile, search_linkedin_posts_by_keyword, search_twitter_posts_by_keyword
+from apify import (search_instagram_posts_by_keyword,
+                    search_instagram_posts_by_keywords, 
+                    scrape_instagram_profile, 
+                    search_linkedin_posts_by_keyword, 
+                    search_twitter_posts_by_keyword)
 import json
 import asyncio
 from config import settings
@@ -385,12 +389,8 @@ async def get_creators(keyword, filters={}):
     Get a list of creators for a given keyword and country
     """
     country = filters.get('country', '')
-    posts_raw = search_instagram_posts_by_keyword(keyword)
-    posts = []
+    posts = search_instagram_posts_by_keywords([keyword])
 
-    for post in posts_raw:
-        posts.extend(post.get("topPosts", []))
-    
     print(f"Found {len(posts)} posts")
     
     # Get all unique owners first
@@ -408,15 +408,10 @@ async def get_creators(keyword, filters={}):
 
     return owners_profiles
 
-async def get_related_instagram_posts(keyword):
-    print("Finding posts for keyword:", keyword)
-    posts_raw = await asyncio.to_thread(search_instagram_posts_by_keyword, keyword)
+async def get_related_instagram_posts(keywords):
+    print("Finding posts for keywords:", keywords)
+    posts = await asyncio.to_thread(search_instagram_posts_by_keywords, keywords)
 
-    posts = []
-    for post in posts_raw:
-        top_posts = post.get("topPosts", [])
-        top_posts.sort(key=lambda x: x.get('likesCount', 0) + x.get('commentsCount', 0) + x.get('reshareCount', 0), reverse=True)
-        posts.extend(top_posts[:10])
     owners = {post.get('ownerUsername', '') for post in posts}
     creator_profiles = await asyncio.to_thread(get_users_profiles, list(owners), False)
 
@@ -442,14 +437,14 @@ def formatRelatedPosts(post):
             "caption", 
             "url", 
             "displayUrl", 
-            "videoUrl", 
+                # "videoUrl", 
             "hashtags", 
             "likesCount",
             "commentsCount",
-            "reshareCount",
+                # "reshareCount",
             "timestamp",
             "images",
-            "locationName",
+                # "locationName",
             "isSponsored",
             "ownerFullName",
             "ownerUsername",
@@ -466,27 +461,19 @@ async def get_related_linkedin_posts(keyword):
     """
     print(f"Finding LinkedIn posts for keyword: {keyword}")
     # return []
-    try:
-        posts = await asyncio.to_thread(search_linkedin_posts_by_keyword, keyword, limit=10)
-        print(f"Returning {len(posts)} LinkedIn posts")
-        return posts
-    except Exception as e:
-        print(f"Error fetching LinkedIn posts for keyword '{keyword}': {str(e)}")
-        return []
-
+    posts = await asyncio.to_thread(search_linkedin_posts_by_keyword, keyword, limit=10)
+    print(f"Returning {len(posts)} LinkedIn posts")
+    return posts
+ 
 
 async def get_related_twitter_posts(keyword):
     """
     Get related Twitter/X posts for a given keyword using Apify Twitter Scraper
     """
     print(f"Finding Twitter posts for keyword: {keyword}")
-    try:
-        posts = await asyncio.to_thread(search_twitter_posts_by_keyword, keyword, limit=10)
-        print(f"Returning {len(posts)} Twitter posts")
-        return posts
-    except Exception as e:
-        print(f"Error fetching Twitter posts for keyword '{keyword}': {str(e)}")
-        return []
+    posts = await asyncio.to_thread(search_twitter_posts_by_keyword, keyword, limit=10)
+    print(f"Returning {len(posts)} Twitter posts")
+    return posts
 
 
 async def get_today_love_msg_greeting():

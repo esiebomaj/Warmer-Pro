@@ -274,17 +274,13 @@ async def related_instagram_posts(req: RelatedPostsRequest):
         raise HTTPException(status_code=400, detail="keywords cannot be empty")
 
     try:
-        tasks = [get_related_instagram_posts(k) for k in req.keywords]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # tasks = [get_related_instagram_posts(k) for k in req.keywords]
+        # results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await get_related_instagram_posts(req.keywords)
 
-        res = []
-        for r in results:
-            if isinstance(r, Exception):
-                # optionally log the error
-                continue
-            res.extend(r)
-        return res
+        return results
     except Exception as e:
+        print(e)
         raise HTTPException(status_code=500, detail=f"Failed to fetch related posts: {str(e)}")
 
 class GenerateCommentRequest(BaseModel):
@@ -322,8 +318,8 @@ async def related_linkedin_posts(req: RelatedPostsRequest):
         res = []
         for r in results:
             if isinstance(r, Exception):
-                # optionally log the error
-                continue
+                raise r
+
             res.extend(r)
         return res
     except Exception as e:
@@ -335,6 +331,7 @@ async def related_twitter_posts(req: RelatedPostsRequest):
     """
     Get related Twitter/X posts for given keywords using Apify Twitter Scraper
     """
+    # return []
     if not req.keywords:
         raise HTTPException(status_code=400, detail="keywords cannot be empty")
 
@@ -345,8 +342,8 @@ async def related_twitter_posts(req: RelatedPostsRequest):
         res = []
         for r in results:
             if isinstance(r, Exception):
-                # optionally log the error
-                continue
+                raise r
+
             res.extend(r)
         return res
     except Exception as e:
