@@ -287,6 +287,7 @@ class GenerateCommentRequest(BaseModel):
     post: dict
     keywords: Optional[str] = None
     prior_post_text: Optional[str] = None
+    custom_instructions: Optional[str] = None
 
 class GenerateCommentResponse(BaseModel):
     comment: str
@@ -296,7 +297,12 @@ class GenerateCommentResponse(BaseModel):
 async def generate_comment(req: GenerateCommentRequest):
     try:
         context = extract_post_context(req.post)
-        comment = await generate_engaging_comment(context, req.keywords, req.prior_post_text)
+        comment = await generate_engaging_comment(
+            context,
+            req.keywords,
+            req.prior_post_text,
+            req.custom_instructions,
+        )
         return {"comment": comment.strip("\"").strip("\'")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate comment: {str(e)}")

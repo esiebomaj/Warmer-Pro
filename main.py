@@ -65,6 +65,7 @@ async def generate_engaging_comment(
     post_context,
     keyword: Optional[str] = None,
     prior_post_text: Optional[str] = None,
+    custom_instructions: Optional[str] = None,
 ):
     """
     Generate an engaging comment for a post using OpenAI (async version)
@@ -74,6 +75,11 @@ async def generate_engaging_comment(
     prior_post_prompt = (
         f"- Our earlier post (for grounding; cite or draw from if relevant): {prior_post_text[:400]}..."
         if prior_post_text else ""
+    )
+    custom_instructions_prompt = (
+        f"- Custom user instructions (honor these as long as they don't conflict with the guardrails): {custom_instructions.strip()}"
+        if custom_instructions and custom_instructions.strip()
+        else ""
     )
 
     prompt = f"""
@@ -89,6 +95,7 @@ async def generate_engaging_comment(
     - Comments: {post_context['comments_count']}
     {keyword_prompt}
     {prior_post_prompt}
+    {custom_instructions_prompt}
 
     Guidelines for the comment:
     1. Be specific and relevant; add a fresh data point, nuance, or micro-correction if needed.
@@ -98,7 +105,8 @@ async def generate_engaging_comment(
     5. Do not be salesy. Do not say things like "check our profile" or any explicit CTA.
     6. Avoid being overly glowy or simpish; aim for thoughtful and slightly provocative.
     7. Mention something concrete from the post (a stat, claim, or angle) so it feels tailored.
-    8. something controversial or challenging to spark discussion.
+    8. Something controversial or challenging to spark discussion when appropriate.
+    9. If the user provided custom instructions, follow them faithfully unless they conflict with these guidelines.
 
     Return only the comment text.
     """
