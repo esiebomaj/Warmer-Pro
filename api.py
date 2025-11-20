@@ -14,7 +14,7 @@ from main import (
     extract_post_context,
     generate_engaging_comment,
 )
-from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_instagram_posts, get_related_linkedin_posts, get_related_twitter_posts
+from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_instagram_posts, get_related_linkedin_posts, get_related_twitter_posts, generate_chat_followups
 import json
 import asyncio
 
@@ -117,6 +117,10 @@ class CreatorsRequest(BaseModel):
     country: Optional[str] = None
     followers_count_gt: Optional[int] = None
     followers_count_lt: Optional[int] = None
+
+
+class ChatFollowupResponse(BaseModel):
+    messages: List[str]
 
 
 @app.post("/creators")
@@ -306,6 +310,27 @@ async def generate_comment(req: GenerateCommentRequest):
         return {"comment": comment.strip("\"").strip("\'")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate comment: {str(e)}")
+
+
+@app.post("/chat-followups", response_model=ChatFollowupResponse)
+async def create_chat_followups(
+    screenshots: Optional[List[UploadFile]] = File(default=None),
+    tone: Optional[str] = Form(default=None),
+):
+    """
+    Accept chat screenshot(s) and return three suggested follow-up messages.
+    """
+    if not screenshots:
+        raise HTTPException(status_code=400, detail="At least one screenshot is required")
+
+    try:
+        followups = await generate_chat_followups(screenshots, tone)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to generate follow-ups: {str(exc)}")
+
+    return ChatFollowupResponse(messages=followups)
 
 
 @app.post("/related-posts/linkedin")

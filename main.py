@@ -13,6 +13,10 @@ from typing import List, Optional, Any
 import httpx
 import os
 import tempfile
+import base64
+import mimetypes
+from fastapi import UploadFile
+
 
 
 # Initialize OpenAI async client
@@ -42,8 +46,6 @@ async def get_image_content(images):
     Downloads images from URLs, converts them to base64, and formats for OpenAI Vision.
     Returns: List of dicts with type/image_url for OpenAI.
     """
-    import base64
-
     img_content = []
     async with httpx.AsyncClient(timeout=10.0) as client:
         for image_url in images:
@@ -58,6 +60,102 @@ async def get_image_content(images):
             except Exception as e:
                 print(f"Error processing image {image_url}: {e}")
     return img_content
+
+
+async def _file_to_image_content(images: Optional[List[UploadFile]]) -> List[dict]:
+    """
+    Convert uploaded image bytes to OpenAI vision payloads.
+    """
+    if not images:
+        return []
+
+    uploaded_files = []
+    for image in images:
+        content = await image.read()
+        if not content:
+            continue
+        mime = image.content_type or mimetypes.guess_type(image.filename or "")[0] or "image/png"
+        encoded = base64.b64encode(content).decode("utf-8")
+        uploaded_files.append({
+            "image_url": f"data:{mime};base64,{encoded}",
+        })
+
+    return uploaded_files
+
+
+class ChatFollowupSuggestions(BaseModel):
+    messages: List[str] = Field(
+        ...,
+        min_length=3,
+        max_length=3,
+        description="Exactly three ordered follow-up replies for the chat.",
+    )
+
+
+class LoveMessage(BaseModel):
+    message: str = Field(
+        ...,
+        description="Single SMS-length message for the user's partner.",
+    )
+
+
+async def generate_chat_followups(
+    screenshots: Optional[List[UploadFile]] = None,
+    tone: Optional[str] = None,
+):
+    """
+    Generate three follow-up messages based on chat screenshots.
+    """
+    image_content = await _file_to_image_content(screenshots)
+    if not image_content:
+        raise ValueError("No usable chat screenshots were provided.")
+
+
+    tone_prompt = f"Tone or custom instruction to honor: {tone.strip()}" if tone and tone.strip() else ""
+    prompt = f"""
+        You will see one or more screenshots of a social chat conversation.
+        The user's messages are typically on the RIGHT side of the screen.
+        
+        Your task is to suggest EXACTLY three distinct, interesting follow-up messages the user can send 
+        to keep the conversation engaging and flowing naturally.
+        {tone_prompt}
+
+        Guidelines:
+        - Each message should be 1-2 sentences, natural, and conversational.
+        - Make replies interesting, playful, or thought-provoking to keep momentum.
+        - Don't repeat the same idea across the three suggestions.
+        - Match the tone and emoji usage already present in the chat.
+        - Avoid generic responses like "That's cool" or "Nice" - be creative and contextual.
+
+        Respond ONLY with valid JSON in the following structure:
+        {{"messages": ["first reply", "second reply", "third reply"]}}
+        """
+
+    messages = [
+        {"role": "system", "content": "You are a sharp assistant that continues chat conversations based on screenshots."},
+        {"role": "user", "content": [{"type": "text", "text": prompt}] + image_content},
+    ]
+
+    response = await client.beta.chat.completions.parse(
+        model="gpt-4o-mini",
+        messages=messages,
+        max_tokens=300,
+        temperature=0.6,
+        response_format=ChatFollowupSuggestions,
+    )
+
+    choice = response.choices[0].message
+
+    if not choice.parsed:
+        refusal = getattr(choice, "refusal", None)
+        raise ValueError(refusal or "Model response could not be parsed for follow-ups.")
+
+    followups = [msg.strip() for msg in choice.parsed.messages if isinstance(msg, str) and msg.strip()]
+
+    if len(followups) < 3:
+        raise ValueError("Model response did not contain three follow-up messages.")
+
+    return followups[:3]
 
 
 
@@ -504,7 +602,7 @@ async def get_today_love_msg_greeting():
         "You dont always have to say 'just wanted to remind you that I love you', be creative and natural"
     )
 
-    response = await client.chat.completions.create(
+    response = await client.beta.chat.completions.parse(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system_msg},
@@ -512,9 +610,19 @@ async def get_today_love_msg_greeting():
         ],
         max_tokens=120,
         temperature=0.85,
+        response_format=LoveMessage,
     )
 
-    return response.choices[0].message.content.strip()
+    choice = response.choices[0].message
+    if not choice.parsed:
+        refusal = getattr(choice, "refusal", None)
+        raise ValueError(refusal or "Model response did not include a love message.")
+
+    message = (choice.parsed.message or "").strip()
+    if not message:
+        raise ValueError("Model returned an empty love message.")
+
+    return message
 
 
 class SocialMediaBrief(BaseModel):
