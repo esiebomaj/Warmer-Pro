@@ -10,11 +10,10 @@ from config import settings
 from main import (
     get_actions_for_keyword,
     get_creators,
-    get_today_love_msg_greeting,
     extract_post_context,
     generate_engaging_comment,
 )
-from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_instagram_posts, get_related_linkedin_posts, get_related_twitter_posts, generate_chat_followups
+from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_instagram_posts, get_related_linkedin_posts, get_related_twitter_posts
 import json
 import asyncio
 
@@ -119,10 +118,6 @@ class CreatorsRequest(BaseModel):
     followers_count_lt: Optional[int] = None
 
 
-class ChatFollowupResponse(BaseModel):
-    messages: List[str]
-
-
 @app.post("/creators")
 async def get_creators_post_api(request: CreatorsRequest):
     """
@@ -176,18 +171,6 @@ async def proxy_image(url: str):
         return Response(content=r.content, headers=headers)
     except httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"Upstream error: {exc}")
-    
-@app.get("/love-message")
-async def love_message():
-    """
-    Generate a creative, loving SMS-style message for a girlfriend.
-    Includes today's day and date when it naturally fits.
-    """
-    try:
-        message = await get_today_love_msg_greeting()
-        return {"message": message}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate love message: {str(e)}")
 
 
 class BlogpostRequest(BaseModel):
@@ -310,27 +293,6 @@ async def generate_comment(req: GenerateCommentRequest):
         return {"comment": comment.strip("\"").strip("\'")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate comment: {str(e)}")
-
-
-@app.post("/chat-followups", response_model=ChatFollowupResponse)
-async def create_chat_followups(
-    screenshots: Optional[List[UploadFile]] = File(default=None),
-    tone: Optional[str] = Form(default=None),
-):
-    """
-    Accept chat screenshot(s) and return three suggested follow-up messages.
-    """
-    if not screenshots:
-        raise HTTPException(status_code=400, detail="At least one screenshot is required")
-
-    try:
-        followups = await generate_chat_followups(screenshots, tone)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to generate follow-ups: {str(exc)}")
-
-    return ChatFollowupResponse(messages=followups)
 
 
 @app.post("/related-posts/linkedin")
