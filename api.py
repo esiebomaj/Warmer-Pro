@@ -116,12 +116,14 @@ class CreatorsRequest(BaseModel):
     country: Optional[str] = None
     followers_count_gt: Optional[int] = None
     followers_count_lt: Optional[int] = None
+    sort_by_emergence: Optional[bool] = False
 
 
 @app.post("/creators")
 async def get_creators_post_api(request: CreatorsRequest):
     """
-    POST: Accepts JSON body with keyword, country and optional follower filters
+    POST: Accepts JSON body with keyword, country and optional follower filters.
+    If sort_by_emergence is True, calculates emergence scores and sorts by growth potential.
     """
     keyword = (request.keyword or "").strip()
     country = (request.country or "").strip()
@@ -136,7 +138,7 @@ async def get_creators_post_api(request: CreatorsRequest):
     if country:
         filters["country"] = country
 
-    return await get_creators(keyword, filters)
+    return await get_creators(keyword, filters, sort_by_emergence=request.sort_by_emergence or False)
 
 @app.get("/proxy-image")
 async def proxy_image(url: str):

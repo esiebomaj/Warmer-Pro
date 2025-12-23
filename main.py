@@ -392,9 +392,10 @@ async def get_actions_for_keyword(keyword, max_posts=10):
         print(f"Error generating actions for keyword '{keyword}': {str(e)}")
         return []
 
-async def get_creators(keyword, filters={}):
+async def get_creators(keyword, filters={}, sort_by_emergence: bool = False):
     """
-    Get a list of creators for a given keyword and country
+    Get a list of creators for a given keyword and country.
+    If sort_by_emergence is True, calculates emergence scores and returns sorted list.
     """
     country = filters.get('country', '')
     posts = search_instagram_posts_by_keywords([keyword])
@@ -408,13 +409,128 @@ async def get_creators(keyword, filters={}):
 
     owners_profiles = get_users_profiles(list(owners), with_related_profiles=False)
 
-    for filter, value in filters.items():
-        if filter == 'followers_count_gt':
+    for filter_key, value in filters.items():
+        if filter_key == 'followers_count_gt':
             owners_profiles = {username: profile for username, profile in owners_profiles.items() if profile.get('followersCount', 0) >= value}
-        elif filter == 'followers_count_lt':
+        elif filter_key == 'followers_count_lt':
             owners_profiles = {username: profile for username, profile in owners_profiles.items() if profile.get('followersCount', 0) <= value}
 
+    if sort_by_emergence:
+        # Calculate emergence scores and return as sorted list
+        creators_with_scores = []
+        for username, profile in owners_profiles.items():
+            # Skip private accounts
+            if profile.get('private', False):
+                continue
+            
+            score_data = calculate_emergence_score(profile, posts)
+            enriched_profile = {**profile, **score_data}
+            creators_with_scores.append(enriched_profile)
+        
+        # Sort by emergence score (highest first)
+        creators_with_scores.sort(key=lambda x: x.get('emergence_score', 0), reverse=True)
+        return creators_with_scores
+    
     return owners_profiles
+
+
+def calculate_emergence_score(profile: dict, posts: list) -> dict:
+    """
+    Calculate an emergence/growth potential score for a creator.
+    Higher scores indicate creators likely to grow/go viral soon.
+    
+    Factors considered:
+    - Engagement rate (likes + comments per post relative to followers)
+    - Follower-to-following ratio (indicates organic growth)
+    - Posting consistency (active creators grow faster)
+    - Sweet spot follower range (1K-100K = emerging)
+    """
+    followers = profile.get('followersCount', 0)
+    following = profile.get('followsCount', 1)  # Avoid division by zero
+    posts_count = profile.get('postsCount', 0)
+    
+    # Get engagement from recent posts by this creator
+    creator_posts = [p for p in posts if p.get('ownerUsername') == profile.get('username')]
+    
+    total_likes = sum(p.get('likesCount', 0) for p in creator_posts)
+    total_comments = sum(p.get('commentsCount', 0) for p in creator_posts)
+    post_sample_size = len(creator_posts) or 1
+    
+    avg_likes = total_likes / post_sample_size
+    avg_comments = total_comments / post_sample_size
+    
+    # 1. Engagement Rate Score (0-35 points)
+    # Great engagement rate is 3-6%+, good is 1-3%
+    if followers > 0:
+        engagement_rate = ((avg_likes + avg_comments) / followers) * 100
+    else:
+        engagement_rate = 0
+    
+    if engagement_rate >= 6:
+        engagement_score = 35
+    elif engagement_rate >= 3:
+        engagement_score = 28
+    elif engagement_rate >= 1.5:
+        engagement_score = 20
+    elif engagement_rate >= 0.5:
+        engagement_score = 10
+    else:
+        engagement_score = 3
+    
+    # 2. Follower-to-Following Ratio Score (0-25 points)
+    # High ratio indicates organic growth, people follow without follow-back
+    ff_ratio = followers / max(following, 1)
+    
+    if ff_ratio >= 10:
+        ff_score = 25
+    elif ff_ratio >= 5:
+        ff_score = 20
+    elif ff_ratio >= 2:
+        ff_score = 15
+    elif ff_ratio >= 1:
+        ff_score = 10
+    else:
+        ff_score = 5
+    
+    # 3. Sweet Spot Follower Range Score (0-20 points)
+    # Emerging creators typically have 1K-100K followers
+    if 5000 <= followers <= 50000:
+        size_score = 20  # Prime emerging range
+    elif 1000 <= followers < 5000:
+        size_score = 18  # Micro-influencer, high potential
+    elif 50000 < followers <= 100000:
+        size_score = 15  # Still emerging
+    elif 500 <= followers < 1000:
+        size_score = 12  # Very early stage
+    elif 100000 < followers <= 500000:
+        size_score = 8   # Established but not mega
+    else:
+        size_score = 3   # Either too small or already big
+    
+    # 4. Activity/Consistency Score (0-20 points)
+    # More posts = more active creator
+    if posts_count >= 200:
+        activity_score = 20
+    elif posts_count >= 100:
+        activity_score = 16
+    elif posts_count >= 50:
+        activity_score = 12
+    elif posts_count >= 20:
+        activity_score = 8
+    else:
+        activity_score = 4
+    
+    # Calculate total score
+    total_score = engagement_score + ff_score + size_score + activity_score
+    
+    return {
+        "emergence_score": total_score,
+        "engagement_rate": round(engagement_rate, 2),
+        "ff_ratio": round(ff_ratio, 2),
+        "avg_likes": round(avg_likes, 1),
+        "avg_comments": round(avg_comments, 1),
+    }
+
 
 async def get_related_instagram_posts(keywords):
     print("Finding posts for keywords:", keywords)
