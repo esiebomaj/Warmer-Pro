@@ -12,7 +12,7 @@ def search_instagram_posts_by_keywords(keywords, limit=10):
 
     # Prepare the Actor input for keyword search
     run_input = {
-        "hashtags": [keyword.replace(" ", "").replace("-", "") for keyword in keywords],
+        "hashtags": [''.join(c for c in keyword if c.isalpha()) for keyword in keywords],
         "keywordSearch": True,
         "resultsLimit": limit,
         "resultsType": "posts"
