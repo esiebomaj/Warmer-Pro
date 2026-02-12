@@ -5,15 +5,17 @@ from apify import (search_instagram_posts_by_keyword,
                     search_linkedin_posts_by_keyword, 
                     search_twitter_posts_by_keyword)
 import json
+import re
 import asyncio
 from config import settings
-from datetime import datetime
+from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import httpx
 import os
 import tempfile
 import base64
+from collections import Counter
 
 
 
@@ -692,6 +694,501 @@ async def transcribe_from_url(url: str) -> str:
     # Derive filename from URL path
     parsed_name = url.split("?")[0].rstrip("/").split("/")[-1] or "media.mp4"
     return await transcribe_media_bytes(content, parsed_name)
+
+def calculate_trend_score(posts: List[Dict], timeframe_hours: int = 24) -> float:
+    """
+    Calculate a trending score based on:
+    - Engagement velocity (likes/comments per hour)
+    - Number of posts in timeframe
+    - Engagement rate
+    """
+    if not posts:
+        return 0.0
+    
+    recent_posts = []
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=timeframe_hours)
+    
+    for post in posts:
+        # Try different timestamp fields
+        timestamp_str = post.get('timestamp') or post.get('created_at') or post.get('createTime')
+        if timestamp_str:
+            try:
+                # Handle Unix timestamp (TikTok)
+                if isinstance(timestamp_str, (int, float)):
+                    post_time = datetime.fromtimestamp(timestamp_str)
+                else:
+                    # Handle ISO format (Instagram)
+                    post_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                
+                if post_time >= cutoff:
+                    recent_posts.append(post)
+            except:
+                # If parsing fails, include the post
+                recent_posts.append(post)
+        else:
+            # If no timestamp, assume it's recent
+            recent_posts.append(post)
+    
+    if not recent_posts:
+        return 0.0
+    
+    # Calculate metrics
+    total_engagement = 0
+    total_views = 0
+    
+    for post in recent_posts:
+        # Platform detection and engagement calculation
+        platform = post.get('platform', '')
+        
+        if platform == 'twitter' or 'engagement' in post:
+            # Twitter
+            engagement = post.get('engagement', {})
+            likes = engagement.get('likes', 0)
+            retweets = engagement.get('retweets', 0)
+            replies = engagement.get('replies', 0)
+            total_engagement += likes + (retweets * 2) + replies
+            total_views += max(likes * 15, 100)  # Estimate views from likes
+            
+        elif 'numLikes' in post or 'reactionCount' in post:
+            # LinkedIn
+            reactions = post.get('numLikes', 0) or post.get('reactionCount', 0)
+            comments = post.get('numComments', 0) or post.get('commentCount', 0)
+            shares = post.get('numShares', 0) or post.get('shareCount', 0)
+            total_engagement += reactions + comments + (shares * 2)
+            total_views += max(reactions * 20, 100)  # Estimate views from reactions
+            
+        else:
+            # Instagram
+            likes = post.get('likesCount', 0) or post.get('likes', 0)
+            comments = post.get('commentsCount', 0) or post.get('comments', 0)
+            total_engagement += likes + comments
+            total_views += max(likes * 10, 100)  # Estimate views from likes
+    
+    engagement_rate = (total_engagement / total_views * 100) if total_views > 0 else 0
+    
+    # Velocity: engagement per hour
+    velocity = total_engagement / timeframe_hours if timeframe_hours > 0 else 0
+    
+    # Post frequency score
+    frequency_score = len(recent_posts) * 10
+    
+    # Combined score (weighted)
+    trend_score = (
+        velocity * 0.4 +           # 40% weight on velocity
+        engagement_rate * 0.3 +     # 30% weight on engagement rate
+        frequency_score * 0.3       # 30% weight on post frequency
+    )
+    
+    return round(trend_score, 2)
+
+
+async def fetch_niche_posts(
+    niche_keywords: List[str],
+    platforms: List[str] = ["instagram", "linkedin", "twitter"],
+) -> List[Dict]:
+    """
+    Fetch posts from all selected platforms for given keywords.
+    Tags each post with _platform so downstream analysis knows the source.
+    Returns a single flat list of posts.
+    """
+    all_posts = []
+    
+    # 1. Instagram
+    if "instagram" in platforms:
+        print(f"📸 Fetching Instagram posts for {len(niche_keywords)} keywords...")
+        for keyword in niche_keywords:
+            try:
+                posts = await asyncio.to_thread(
+                    search_instagram_posts_by_keywords,
+                    [keyword],
+                    limit=50
+                )
+                for post in posts:
+                    post['_platform'] = 'instagram'
+                    all_posts.append(post)
+            except Exception as e:
+                print(f"⚠️  Error fetching Instagram keyword '{keyword}': {e}")
+    
+    # 2. LinkedIn
+    if "linkedin" in platforms:
+        print(f"💼 Fetching LinkedIn posts for {len(niche_keywords)} keywords...")
+        for keyword in niche_keywords:
+            try:
+                posts = await asyncio.to_thread(
+                    search_linkedin_posts_by_keyword,
+                    keyword,
+                    limit=50
+                )
+                for post in posts:
+                    post['_platform'] = 'linkedin'
+                    all_posts.append(post)
+            except Exception as e:
+                print(f"⚠️  Error fetching LinkedIn keyword '{keyword}': {e}")
+    
+    # 3. Twitter
+    if "twitter" in platforms:
+        print(f"🐦 Fetching Twitter posts for {len(niche_keywords)} keywords...")
+        for keyword in niche_keywords:
+            try:
+                posts = await asyncio.to_thread(
+                    search_twitter_posts_by_keyword,
+                    keyword,
+                    limit=50
+                )
+                for post in posts:
+                    post['_platform'] = 'twitter'
+                    all_posts.append(post)
+            except Exception as e:
+                print(f"⚠️  Error fetching Twitter keyword '{keyword}': {e}")
+    
+    print(f"📦 Total posts fetched: {len(all_posts)}")
+    return all_posts
+
+
+def analyze_hashtags_from_posts(
+    all_posts: List[Dict],
+    timeframe_hours: int = 24
+) -> Dict:
+    """
+    Extract and score trending hashtags from already-fetched posts.
+    Returns the hashtag trending results dict.
+    """
+    all_hashtag_data = {}
+    
+    for post in all_posts:
+        platform = post.get('_platform', 'unknown')
+        
+        # Extract hashtags depending on platform
+        if platform == 'instagram':
+            hashtags = post.get('hashtags', [])
+        else:
+            text = post.get('text', '') or post.get('commentary', '') or ''
+            hashtags = re.findall(r'#(\w+)', text)
+        
+        for tag in hashtags:
+            tag_clean = tag.lower().strip('#')
+            
+            if tag_clean not in all_hashtag_data:
+                all_hashtag_data[tag_clean] = {
+                    'posts': [],
+                    'platforms': set(),
+                    'total_engagement': 0,
+                    'is_official_trend': False
+                }
+            
+            all_hashtag_data[tag_clean]['posts'].append(post)
+            all_hashtag_data[tag_clean]['platforms'].add(platform)
+            
+            # Calculate engagement per platform
+            if platform == 'instagram':
+                all_hashtag_data[tag_clean]['total_engagement'] += (
+                    (post.get('likesCount', 0) or 0) +
+                    (post.get('commentsCount', 0) or 0)
+                )
+            elif platform == 'linkedin':
+                reactions = post.get('numLikes', 0) or post.get('reactionCount', 0) or 0
+                comments = post.get('numComments', 0) or post.get('commentCount', 0) or 0
+                shares = post.get('numShares', 0) or post.get('shareCount', 0) or 0
+                all_hashtag_data[tag_clean]['total_engagement'] += reactions + comments + (shares * 2)
+            elif platform == 'twitter':
+                engagement = post.get('engagement', {})
+                likes = engagement.get('likes', 0) or 0
+                retweets = engagement.get('retweets', 0) or 0
+                replies = engagement.get('replies', 0) or 0
+                all_hashtag_data[tag_clean]['total_engagement'] += likes + (retweets * 2) + replies
+    
+    # Calculate trend scores
+    print("📊 Calculating hashtag trend scores...")
+    trending_topics = []
+    
+    for hashtag, data in all_hashtag_data.items():
+        if data['posts']:
+            trend_score = calculate_trend_score(data['posts'], timeframe_hours)
+        else:
+            trend_score = 0
+        
+        # Boost score if trending on multiple platforms
+        platform_multiplier = len(data['platforms']) * 1.5
+        trend_score *= platform_multiplier
+        
+        if trend_score > 5:
+            recent_post_count = len([p for p in data['posts'] if is_recent_post(p, timeframe_hours)])
+            
+            trending_topics.append({
+                'topic': f"#{hashtag}",
+                'trend_score': round(trend_score, 2),
+                'platforms': list(data['platforms']),
+                'post_count': len(data['posts']),
+                'total_engagement': data['total_engagement'],
+                'sample_posts': data['posts'][:5],
+                'velocity': f"+{recent_post_count} posts/{timeframe_hours}h",
+            })
+    
+    trending_topics.sort(key=lambda x: x['trend_score'], reverse=True)
+    
+    # Summary statistics
+    platform_breakdown = Counter()
+    total_posts = 0
+    total_engagement = 0
+    
+    for topic in trending_topics:
+        for platform in topic['platforms']:
+            platform_breakdown[platform] += 1
+        total_posts += topic['post_count']
+        total_engagement += topic['total_engagement']
+    
+    return {
+        'trending_topics': trending_topics[:20],
+        'summary': {
+            'total_trending_topics': len(trending_topics),
+            'total_posts_analyzed': total_posts,
+            'total_engagement': total_engagement,
+            'platform_breakdown': dict(platform_breakdown),
+        }
+    }
+
+
+async def identify_trending_topics(
+    niche_keywords: List[str],
+    platforms: List[str] = ["instagram", "linkedin", "twitter"],
+    timeframe_hours: int = 24
+) -> Dict:
+    """
+    Identify trending topics in your niche across Instagram, LinkedIn, and Twitter.
+    Fetches posts ONCE, then runs two analyses in parallel:
+      1. Hashtag extraction and scoring
+      2. Conversation clustering via OpenAI
+    """
+    # Step 1: Fetch all posts once
+    all_posts = await fetch_niche_posts(niche_keywords, platforms)
+    
+    # Step 2: Run both analyses on the same data
+    hashtag_results = analyze_hashtags_from_posts(all_posts, timeframe_hours)
+    conversation_results = await analyze_conversations_from_posts(all_posts, niche_keywords)
+    
+    return {
+        'trending_topics': hashtag_results['trending_topics'],
+        'conversations': conversation_results,
+        'summary': {
+            **hashtag_results['summary'],
+            'niche_keywords': niche_keywords,
+            'platforms_analyzed': platforms,
+            'top_trend': hashtag_results['trending_topics'][0] if hashtag_results['trending_topics'] else None,
+        }
+    }
+
+
+class SampleQuote(BaseModel):
+    """A sample quote with the post numbers it came from"""
+    quote: str = Field(description="A quote from the posts that represent this topic")
+    post_numbers: List[int] = Field(description="The POST numbers (e.g. [3, 17]) of posts that discuss this specific point")
+
+
+class ConversationCluster(BaseModel):
+    """A trending conversation topic extracted from post text"""
+    topic: str = Field(description="Short label for this conversation cluster, 3-6 words")
+    description: str = Field(description="One sentence explaining what people are saying about this topic")
+    related_post_numbers: List[int] = Field(description="All POST numbers that discuss this topic")
+    sentiment: str = Field(description="Overall sentiment: positive, negative, mixed, or neutral")
+    sample_quotes: List[SampleQuote] = Field(description="2-3 short direct quotes from the posts that represent this topic")
+    subtopics: List[str] = Field(description="2-4 more specific angles within this topic")
+
+
+class TrendingConversations(BaseModel):
+    """Structured output for trending conversation clusters"""
+    clusters: List[ConversationCluster]
+
+
+async def analyze_conversations_from_posts(
+    all_posts: List[Dict],
+    niche_keywords: List[str],
+) -> Dict:
+    """
+    Analyze actual post text to find trending conversation topics using OpenAI.
+    Takes already-fetched posts (no extra Apify calls).
+    """
+    if not all_posts:
+        return {'clusters': [], 'total_posts_analyzed': 0, 'post_index': []}
+
+    # Build post text entries with engagement, platform info, and URL
+    post_entries = []
+    for post in all_posts:
+        platform = post.get('_platform', 'unknown')
+
+        # Extract text, engagement, and URL depending on platform
+        if platform == 'instagram':
+            text = post.get('caption', '') or ''
+            engagement = (post.get('likesCount', 0) or 0) + (post.get('commentsCount', 0) or 0)
+            url = post.get('url', '') or post.get('shortCode', '')
+            if url and not url.startswith('http'):
+                url = f"https://www.instagram.com/p/{url}/"
+        elif platform == 'linkedin':
+            text = post.get('text', '') or post.get('commentary', '') or ''
+            reactions = post.get('numLikes', 0) or post.get('reactionCount', 0) or 0
+            comments = post.get('numComments', 0) or post.get('commentCount', 0) or 0
+            engagement = reactions + comments
+            url = post.get('url', '') or post.get('postUrl', '') or ''
+        elif platform == 'twitter':
+            text = post.get('text', '') or ''
+            eng = post.get('engagement', {})
+            engagement = (eng.get('likes', 0) or 0) + (eng.get('retweets', 0) or 0)
+            url = post.get('url', '') or post.get('tweetUrl', '') or ''
+        else:
+            text = post.get('caption', '') or post.get('text', '') or ''
+            engagement = 0
+            url = post.get('url', '') or ''
+
+        if text and len(text.strip()) > 20:
+            post_entries.append({
+                'text': text[:500],
+                'platform': platform,
+                'engagement': engagement,
+                'url': url or '',
+            })
+
+    if not post_entries:
+        return {'clusters': [], 'total_posts_analyzed': 0, 'post_index': []}
+
+    # Sort by engagement so we analyze the most impactful posts first
+    post_entries.sort(key=lambda x: x['engagement'], reverse=True)
+
+    # Take top 100 posts to stay within token limits
+    top_posts = post_entries[:100]
+
+    # Build a numbered post index (for resolving post numbers → URLs later)
+    post_index = []
+    for i, p in enumerate(top_posts, start=1):
+        post_index.append({
+            'post_number': i,
+            'platform': p['platform'],
+            'url': p['url'],
+        })
+
+    # Build the numbered text block for OpenAI
+    combined_text = ""
+    for i, p in enumerate(top_posts, start=1):
+        combined_text += f"POST {i} [{p['platform'].upper()}] (engagement: {p['engagement']}): {p['text']}\n---\n"
+
+    print(f"💬 Analyzing {len(top_posts)} posts for conversation clusters...")
+
+    try:
+        response = await client.beta.chat.completions.parse(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a social media trend analyst. Analyze the following numbered posts from "
+                        "Instagram, LinkedIn, and Twitter to identify trending conversation topics "
+                        "and themes. Group similar posts into clusters. Focus on what people are "
+                        "ACTUALLY talking about — the substance of their posts, not just hashtags.\n\n"
+                        "IMPORTANT RULES:\n"
+                        "- Each post is numbered (POST 1, POST 2, etc.). You MUST reference these numbers.\n"
+                        # "- For sample_quotes: Copy text EXACTLY and VERBATIM from the posts. Do NOT paraphrase or invent quotes.\n"
+                        "- For related_post_numbers: List ALL post numbers that discuss this topic.\n"
+                        "- For each sample_quote: Include the post_numbers array with the POST number(s) the quote comes from.\n"
+                        "- Only use information from the provided posts. Do NOT invent or hallucinate content.\n"
+                        "- Rank clusters by how frequently topics appear and how much engagement they get.\n"
+                        "- Return 5-10 clusters."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Analyze these {len(top_posts)} numbered social media posts about "
+                        f"'{', '.join(niche_keywords)}' and identify the top trending conversation "
+                        f"topics.\n\n"
+                        f"For each cluster, provide:\n"
+                        f"- topic: A short label (3-6 words)\n"
+                        f"- description: One sentence about what people are saying\n"
+                        f"- related_post_numbers: List of POST numbers that discuss this topic\n"
+                        f"- sentiment: positive, negative, mixed, or neutral\n"
+                        f"- sample_quotes: 2-3 objects, each with a 'quote' (copied VERBATIM from a post) "
+                        f"and 'post_numbers' (the POST numbers the quote comes from)\n"
+                        f"- subtopics: 2-4 specific angles within this topic\n\n"
+                        f"Posts:\n{combined_text}"
+                    )
+                }
+            ],
+            max_tokens=3000,
+            temperature=0.4,
+            response_format=TrendingConversations,
+        )
+
+        parsed = response.choices[0].message.parsed
+
+        if not parsed:
+            print("⚠️  OpenAI returned no parsed conversations")
+            return {'clusters': [], 'total_posts_analyzed': len(post_entries), 'post_index': post_index}
+
+        # Build a lookup from post number → URL
+        post_url_lookup = {p['post_number']: p['url'] for p in post_index}
+
+        clusters_data = []
+        for cluster in parsed.clusters:
+            # Resolve post numbers to URLs for each sample quote
+            resolved_quotes = []
+            for sq in cluster.sample_quotes:
+                resolved_posts = []
+                for pn in sq.post_numbers:
+                    url = post_url_lookup.get(pn, '')
+                    if url:
+                        resolved_posts.append({'post_number': pn, 'url': url})
+                resolved_quotes.append({
+                    'quote': sq.quote,
+                    'post_numbers': sq.post_numbers,
+                    'posts': resolved_posts,
+                })
+
+            # Resolve related_post_numbers to URLs
+            related_posts = []
+            for pn in cluster.related_post_numbers:
+                url = post_url_lookup.get(pn, '')
+                if url:
+                    related_posts.append({'post_number': pn, 'url': url})
+
+            clusters_data.append({
+                'topic': cluster.topic,
+                'description': cluster.description,
+                'mention_count': len(cluster.related_post_numbers),
+                'sentiment': cluster.sentiment,
+                'sample_quotes': resolved_quotes,
+                'subtopics': cluster.subtopics,
+                'related_posts': related_posts,
+            })
+
+        print(f"✅ Found {len(clusters_data)} conversation clusters")
+        return {
+            'clusters': clusters_data,
+            'total_posts_analyzed': len(post_entries),
+            'post_index': post_index,
+        }
+
+    except Exception as e:
+        print(f"⚠️  Error analyzing conversations: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'clusters': [], 'total_posts_analyzed': len(post_entries), 'post_index': post_index}
+
+
+def is_recent_post(post: Dict, hours: int) -> bool:
+    """Check if post is within the recent timeframe"""
+    try:
+        timestamp_str = post.get('timestamp') or post.get('created_at') or post.get('createTime')
+        if not timestamp_str:
+            return True
+        
+        if isinstance(timestamp_str, (int, float)):
+            post_time = datetime.fromtimestamp(timestamp_str)
+        else:
+            post_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        return post_time >= cutoff
+    except:
+        return True
+
 
 async def main():
     """

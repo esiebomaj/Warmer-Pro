@@ -12,6 +12,7 @@ from main import (
     get_creators,
     extract_post_context,
     generate_engaging_comment,
+    identify_trending_topics,
 )
 from main import analyze_text_to_brief, transcribe_media_bytes, transcribe_from_url, SocialMediaBrief, get_related_instagram_posts, get_related_linkedin_posts, get_related_twitter_posts
 import json
@@ -343,5 +344,36 @@ async def related_twitter_posts(req: RelatedPostsRequest):
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch Twitter posts: {str(e)}")
+
+
+class TrendingTopicsRequest(BaseModel):
+    niche_keywords: List[str]
+    platforms: Optional[List[str]] = ["instagram", "linkedin", "twitter"]
+    timeframe_hours: Optional[int] = 24
+
+
+@app.post("/trending-topics")
+async def get_trending_topics_endpoint(request: TrendingTopicsRequest):
+    """
+    Analyze trending topics in a specific niche across Instagram, LinkedIn, and Twitter using Apify
+    """
+    if not request.niche_keywords:
+        raise HTTPException(status_code=400, detail="niche_keywords cannot be empty")
+    
+    try:
+        result = await identify_trending_topics(
+            request.niche_keywords,
+            request.platforms or ["instagram", "linkedin", "twitter"],
+            request.timeframe_hours or 24
+        )
+        return result
+    except Exception as e:
+        print(f"Error in trending topics: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to fetch trending topics: {str(e)}"
+        )
 
 

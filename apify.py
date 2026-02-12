@@ -99,17 +99,18 @@ def format_ig_profile(apify_profile):
     return profile
 
 
-def search_linkedin_posts_by_keyword(keyword: str, limit: int = 10):
+def search_linkedin_posts_by_keyword(keyword: str, limit: int = 10, sort_type: str = "relevance"):
     """
     Search for LinkedIn posts by keyword using Apify LinkedIn Posts Search Scraper (No Cookies)
     Actor: apimaestro/linkedin-posts-search-scraper-no-cookies
+    sort_type: relevance, date_posted
     """
     client = ApifyClient(settings.apify_api_token)
     
     # Prepare the Actor input for keyword search
     run_input = {
         "keyword": keyword,
-        "sort_type": "relevance",
+        "sort_type": sort_type,
         "page_number": 1,
         "limit": min(limit, 50),  # Max 50 per page according to API docs
         "date_filter": ""  # Empty means no date filter
@@ -126,18 +127,19 @@ def search_linkedin_posts_by_keyword(keyword: str, limit: int = 10):
     return posts
 
 
-def search_twitter_posts_by_keyword(keyword: str, limit: int = 10):
+def search_twitter_posts_by_keyword(keyword: str, limit: int = 10, search_type: str = "Top"):
     """
     Search for Twitter/X posts by keyword using Apify Twitter Scraper PPR
     Actor: danek/twitter-scraper-ppr
+    search_type: Top, Latest
     """
     client = ApifyClient(settings.apify_api_token)
     
     # Prepare the Actor input for keyword search
     run_input = {
         "query": keyword,
-        "search_type": "Latest",
-        "max_posts": limit
+        "search_type": search_type,
+        "max_posts": limit,
     }
     
     # Run the Actor and wait for it to finish
@@ -189,3 +191,62 @@ def search_twitter_posts_by_keyword(keyword: str, limit: int = 10):
     
     print(len(posts), "Twitter posts found!")
     return posts
+
+
+def get_tiktok_trending_hashtags(country: str = "US", industry: str = ""):
+    """
+    Get trending hashtags from TikTok's official Trend Discovery platform
+    Uses: clockworks/tiktok-trends-scraper
+    """
+    client = ApifyClient(settings.apify_api_token)
+    
+    run_input = {
+          "adsTimeRange": "30",
+         "resultsPerPage": 100,
+         "adsCountryCode": "NG",
+    }
+    
+    if industry:
+        run_input["industries"] = [industry]
+    
+    try:
+        run = client.actor("clockworks/tiktok-trends-scraper").call(run_input=run_input)
+        
+        trends = []
+        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            trends.append(item)
+            print(item)
+        print(f"Found {len(trends)} TikTok trending hashtags")
+        return trends
+    except Exception as e:
+        print(f"Error fetching TikTok trends: {e}")
+        return []
+
+
+def search_tiktok_hashtag_posts(hashtag: str, limit: int = 50):
+    """
+    Search TikTok posts by hashtag with engagement metrics
+    Uses: powerai/tiktok-hashtag-search-scraper
+    """
+    client = ApifyClient(settings.apify_api_token)
+    
+    # Remove # if present
+    hashtag_clean = hashtag.strip('#')
+    
+    run_input = {
+        "hashtags": [hashtag_clean],
+        "resultsPerHashtag": min(limit, 100)
+    }
+    
+    try:
+        run = client.actor("powerai/tiktok-hashtag-search-scraper").call(run_input=run_input)
+        
+        posts = []
+        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            posts.append(item)
+        
+        print(f"Found {len(posts)} TikTok posts for #{hashtag_clean}")
+        return posts
+    except Exception as e:
+        print(f"Error searching TikTok hashtag: {e}")
+        return []
